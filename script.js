@@ -17,6 +17,7 @@ const box = document.getElementById("box");
 // ANIMATION
 const pixelMeter = 50;
 let FPS = 60;
+const threshold = 0.05;
 
 // BALL
 let m = 1;
@@ -30,7 +31,7 @@ const balls = [];
 
 // ENVIRONMENT
 let g = 9.81;
-let gVec = { x: 0, y: 1 };
+let gVec = vec(0, 1);
 let dt = 1 / FPS;
 let d = 0.1;
 let b = 0.8;
@@ -38,221 +39,206 @@ let fricW = 0.5;
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-function getContactVelocity(ball, rx, ry) {
-    return {
-        x: ball.vel.x - ball.angularVel * ry,
-        y: ball.vel.y + ball.angularVel * rx
-    };
+function createWalls() {
+    const width = box.clientWidth / pixelMeter;
+    const height = box.clientHeight / pixelMeter;
+
+    return [
+        { pos: vec(0, 0), normal: vec(1, 0) },
+        { pos: vec(width, 0), normal: vec(-1, 0) },
+        { pos: vec(0, 0), normal: vec(0, 1) },
+        { pos: vec(0, height), normal: vec(0, -1) }
+    ];
+}
+
+function vec(x = 0, y = 0) {
+    return { x, y };
+}
+
+function add(a, b) {
+    return vec(a.x + b.x, a.y + b.y);
+}
+
+function sub(a, b) {
+    return vec(a.x - b.x, a.y - b.y);
+}
+
+function mul(v, scalar) {
+    return vec(v.x * scalar, v.y * scalar);
+}
+
+function dot(a, b) {
+    return a.x * b.x + a.y * b.y;
+}
+
+function magnitude(v) {
+    return Math.sqrt(v.x * v.x + v.y * v.y);
+}
+
+function normalize(v) {
+    const length = magnitude(v);
+    return vec(v.x / length, v.y / length);
+}
+
+function cross(a, b) {
+    return a.x * b.y - a.y * b.x;
+}
+
+function perpendicular(v) {
+    return vec(-v.y, v.x);
+}
+
+function getContactVelocity(ball, r) {
+    const rotationalVelocity = vec(-ball.angularVel * r.y, ball.angularVel * r.x);
+    return add(ball.vel, rotationalVelocity);
+}
+
+function handleBallCollision(ballA, ballB) {
+    const delta = sub(ballB.pos, ballA.pos);
+    const distance = magnitude(delta);
+    const combinedRadius = ballA.radius + ballB.radius;
+
+    if (distance >= combinedRadius) {
+        return;
+    }
+
+    if (distance === 0) {
+        return;
+    }
+
+    const normal = normalize(delta);
+    const tangent = perpendicular(normal);
+    const penetration = combinedRadius - distance;
+
+    const invMassA = 1 / ballA.mass;
+    const invMassB = 1 / ballB.mass;
+    const totalInvMass = invMassA + invMassB;
+
+    const correctionA = penetration * (invMassA / totalInvMass);
+    const correctionB = penetration * (invMassB / totalInvMass);
+
+    ballA.pos = sub(ballA.pos, mul(normal, correctionA));
+    ballB.pos = add(ballB.pos, mul(normal, correctionB));
+
+    const rA = mul(normal, ballA.radius);
+    const rB = mul(normal, -ballB.radius);
+
+    const contactVelocityA = getContactVelocity(ballA, rA);
+    const contactVelocityB = getContactVelocity(ballB, rB);
+    const relativeVelocity = sub(contactVelocityB, contactVelocityA);
+    const normalVelocity = dot(relativeVelocity, normal);
+
+    if (normalVelocity >= 0) {
+        return;
+    }
+
+    const normalImpulse = -(1 + b) * normalVelocity / (1 / ballA.mass + 1 / ballB.mass);
+
+    ballA.vel = sub(ballA.vel, mul(normal, normalImpulse / ballA.mass));
+    ballB.vel = add(ballB.vel, mul(normal, normalImpulse / ballB.mass));
+
+    const tangentVelocity = dot(relativeVelocity, tangent);
+    const rACrossT = cross(rA, tangent);
+    const rBCrossT = cross(rB, tangent);
+
+    const denominator = 1 / ballA.mass + 1 / ballB.mass + (rACrossT *
+        rACrossT) / ballA.inertia + (rBCrossT * rBCrossT) / ballB.inertia;
+    let frictionImpulse = -tangentVelocity / denominator;
+    const friction = Math.sqrt(ballA.friction * ballB.friction);
+    const maxFrictionImpulse = friction * Math.abs(normalImpulse);
+    frictionImpulse = Math.max(-maxFrictionImpulse,
+        Math.min(frictionImpulse, maxFrictionImpulse));
+
+    ballA.vel = sub(ballA.vel, mul(tangent, frictionImpulse / ballA.mass));
+    ballB.vel = add(ballB.vel, mul(tangent, frictionImpulse / ballB.mass));
+    ballA.angularVel -= rACrossT * frictionImpulse / ballA.inertia;
+    ballB.angularVel += rBCrossT * frictionImpulse / ballB.inertia;
 }
 
 function handleBallCollisions() {
     for (let i = 0; i < balls.length; i++) {
         for (let j = i + 1; j < balls.length; j++) {
-            const ballA = balls[i];
-            const ballB = balls[j];
-
-            const dx = ballB.pos.x - ballA.pos.x;
-            const dy = ballB.pos.y - ballA.pos.y;
-
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            const minDistance = ballA.radius + ballB.radius;
-
-            if (distance >= minDistance || distance === 0) {
-                if (distance === 0) {
-                    ballA.pos.x -= minDistance / 2;
-                    ballB.pos.x += minDistance / 2;
-                }
-                continue;
-            }
-
-            const nx = dx / distance;
-            const ny = dy / distance;
-
-            const overlap = minDistance - distance;
-
-            ballA.pos.x -= nx * overlap / 2;
-            ballA.pos.y -= ny * overlap / 2;
-
-            ballB.pos.x += nx * overlap / 2;
-            ballB.pos.y += ny * overlap / 2;
-
-            const contactAX = ballA.pos.x + nx * ballA.radius;
-            const contactAY = ballA.pos.y + ny * ballA.radius;
-
-            const contactBX = ballB.pos.x - nx * ballB.radius;
-            const contactBY = ballB.pos.y - ny * ballB.radius;
-
-            const rAX = contactAX - ballA.pos.x;
-            const rAY = contactAY - ballA.pos.y;
-
-            const rBX = contactBX - ballB.pos.x;
-            const rBY = contactBY - ballB.pos.y;
-
-            const velA = getContactVelocity(ballA, rAX, rAY);
-            const velB = getContactVelocity(ballB, rBX, rBY);
-
-            const relativeVelX = velB.x - velA.x;
-            const relativeVelY = velB.y - velA.y;
-
-            const relativeNormalVel = relativeVelX * nx + relativeVelY * ny;
-
-            if (relativeNormalVel > 0) {
-                continue;
-            }
-
-            const crossAN = rAX * ny - rAY * nx;
-            const crossBN = rBX * ny - rBY * nx;
-
-            const normalDenominator = 1 / ballA.mass + 1 / ballB.mass +
-                (crossAN * crossAN) / ballA.inertia + (crossBN * crossBN) / ballB.inertia;
-
-            const normalImpulse = -(1 + b) * relativeNormalVel / normalDenominator;
-
-            ballA.vel.x -= normalImpulse * nx / ballA.mass;
-            ballA.vel.y -= normalImpulse * ny / ballA.mass;
-
-            ballB.vel.x += normalImpulse * nx / ballB.mass;
-            ballB.vel.y += normalImpulse * ny / ballB.mass;
-
-            ballA.angularVel -= crossAN * normalImpulse / ballA.inertia;
-            ballB.angularVel += crossBN * normalImpulse / ballB.inertia;
-
-            const tx = -ny;
-            const ty = nx;
-
-            const newVelA = getContactVelocity(ballA, rAX, rAY);
-            const newVelB = getContactVelocity(ballB, rBX, rBY);
-
-            const newRelativeVelX = newVelB.x - newVelA.x;
-            const newRelativeVelY = newVelB.y - newVelA.y;
-
-            const relativeTangentVel = newRelativeVelX * tx + newRelativeVelY * ty;
-
-            const crossAT = rAX * ty - rAY * tx;
-            const crossBT = rBX * ty - rBY * tx;
-
-            const tangentDenominator = 1 / ballA.mass + 1 / ballB.mass +
-                (crossAT * crossAT) / ballA.inertia + (crossBT * crossBT) / ballB.inertia;
-
-            let frictionImpulse = -relativeTangentVel / tangentDenominator;
-
-            const friction = Math.sqrt(ballA.friction * ballB.friction);
-
-            const maxFrictionImpulse = friction * Math.abs(normalImpulse);
-
-            frictionImpulse = Math.max(-maxFrictionImpulse, Math.min(frictionImpulse, maxFrictionImpulse));
-
-            ballA.vel.x -= frictionImpulse * tx / ballA.mass;
-            ballA.vel.y -= frictionImpulse * ty / ballA.mass;
-
-            ballB.vel.x += frictionImpulse * tx / ballB.mass;
-            ballB.vel.y += frictionImpulse * ty / ballB.mass;
-
-            ballA.angularVel -= crossAT * frictionImpulse / ballA.inertia;
-            ballB.angularVel += crossBT * frictionImpulse / ballB.inertia;
+            handleBallCollision(balls[i], balls[j]);
         }
     }
 }
 
-function handleWallCollision(ball, nx, ny) {
-    const tx = -ny;
-    const ty = nx;
+function handleWallResponse(ball, normal) {
+    const tangent = perpendicular(normal);
+    const normalVelocity = dot(ball.vel, normal);
 
-    const normalVel = ball.vel.x * nx + ball.vel.y * ny;
-
-    if (normalVel >= 0) {
+    if (normalVelocity >= 0) {
         return;
     }
 
-    const normalImpulse = -(1 + b) * normalVel * ball.mass;
+    if (Math.abs(normalVelocity) < threshold) {
+        ball.vel = sub(ball.vel, mul(normal, normalVelocity));
+        return;
+    }
 
-    ball.vel.x += normalImpulse * nx / ball.mass;
-    ball.vel.y += normalImpulse * ny / ball.mass;
+    const normalImpulse = -(1 + b) * normalVelocity * ball.mass;
 
-    const rx = -nx * ball.radius;
-    const ry = -ny * ball.radius;
+    ball.vel = add(ball.vel, mul(normal, normalImpulse / ball.mass));
 
-    const contactVel = getContactVelocity(ball, rx, ry);
+    const r = mul(normal, -ball.radius);
+    const contactVelocity = getContactVelocity(ball, r);
+    const tangentVelocity = dot(contactVelocity, tangent);
+    const rCrossT = cross(r, tangent);
 
-    const tangentVel = contactVel.x * tx + contactVel.y * ty;
-
-    const crossT = rx * ty - ry * tx;
-
-    const denominator = 1 / ball.mass + (crossT * crossT) / ball.inertia;
-
-    let frictionImpulse = -tangentVel / denominator;
-
+    const denominator = 1 / ball.mass + (rCrossT * rCrossT) / ball.inertia;
+    let frictionImpulse = -tangentVelocity / denominator;
     const friction = Math.sqrt(ball.friction * fricW);
-
     const maxFrictionImpulse = friction * Math.abs(normalImpulse);
+    frictionImpulse = Math.max(-maxFrictionImpulse,
+        Math.min(frictionImpulse, maxFrictionImpulse));
 
-    frictionImpulse = Math.max(-maxFrictionImpulse, Math.min(frictionImpulse, maxFrictionImpulse));
-
-    ball.vel.x += frictionImpulse * tx / ball.mass;
-    ball.vel.y += frictionImpulse * ty / ball.mass;
-
-    ball.angularVel += crossT * frictionImpulse / ball.inertia;
+    ball.vel = add(ball.vel, mul(tangent, frictionImpulse / ball.mass));
+    ball.angularVel += rCrossT * frictionImpulse / ball.inertia;
 }
 
-function handleWallCollisions(ball) {
-    const right = box.clientWidth;
-    const bottom = box.clientHeight;
+function handleWallCollision(ball, wall) {
+    const difference = sub(ball.pos, wall.pos);
+    const distance = dot(difference, wall.normal);
 
-    const x = ball.pos.x * pixelMeter;
-    const y = ball.pos.y * pixelMeter;
-
-    if (x + ball.pxRad > right) {
-        ball.pos.x = (right - ball.pxRad) / pixelMeter;
-        handleWallCollision(ball, -1, 0);
+    if (distance >= ball.radius) {
+        return;
     }
 
-    if (x - ball.pxRad < 0) {
-        ball.pos.x = ball.pxRad / pixelMeter;
-        handleWallCollision(ball, 1, 0);
-    }
+    const penetration = ball.radius - distance;
 
-    if (y + ball.pxRad > bottom) {
-        ball.pos.y = (bottom - ball.pxRad) / pixelMeter;
-        handleWallCollision(ball, 0, -1);
-    }
+    ball.pos = add(ball.pos, mul(wall.normal, penetration));
 
-    if (y - ball.pxRad < 0) {
-        ball.pos.y = ball.pxRad / pixelMeter;
-        handleWallCollision(ball, 0, 1);
-    }
+    handleWallResponse(ball, wall.normal);
 }
 
 function calculateForces(ball) {
-    const gravForceX = ball.mass * g * gVec.x;
-    const gravForceY = ball.mass * g * gVec.y;
+    const grav = mul(gVec, g);
 
-    const dragForceX = -ball.vel.x * d;
-    const dragForceY = -ball.vel.y * d;
+    const gravForce = mul(grav, ball.mass);
+    const dragForce = mul(ball.vel, -d);
+    const force = add(gravForce, dragForce);
 
-    const forceX = gravForceX + dragForceX;
-    const forceY = gravForceY + dragForceY;
-
-    const accelX = forceX / ball.mass;
-    const accelY = forceY / ball.mass;
+    const acceleration = mul(force, 1 / ball.mass);
 
     const angularDrag = -ball.angularVel * d;
     const angularAccel = angularDrag / ball.inertia;
 
-    return { x: accelX, y: accelY, angular: angularAccel };
+    return { accel: acceleration, angular: angularAccel };
 }
 
-function updateVelocity(ball, x, y) {
-    ball.vel.x += x * dt;
-    ball.vel.y += y * dt;
+function updateVelocity(ball, accel) {
+    ball.vel = add(ball.vel, mul(accel, dt));
 }
 
 function updateAngularVelocity(ball, accel) {
     ball.angularVel += accel * dt;
+    if (Math.abs(ball.angularVel) < threshold) {
+        ball.angularVel = 0;
+    }
 }
 
 function updatePosition(ball) {
-    ball.pos.x += ball.vel.x * dt;
-    ball.pos.y += ball.vel.y * dt;
+    ball.pos = add(ball.pos, mul(ball.vel, dt));
 }
 
 function updateAngle(ball) {
@@ -260,16 +246,17 @@ function updateAngle(ball) {
 }
 
 async function calcPhy() {
+    const walls = createWalls();
     for (const ball of balls) {
         const forces = calculateForces(ball);
-        updateVelocity(ball, forces.x, forces.y);
+        updateVelocity(ball, forces.accel);
         updateAngularVelocity(ball, forces.angular);
         updatePosition(ball);
         updateAngle(ball);
-    }
 
-    for (const ball of balls) {
-        handleWallCollisions(ball);
+        for (const wall of walls) {
+            handleWallCollision(ball, wall);
+        }
     }
 
     for (let i = 0; i < 3; i++) {
@@ -299,11 +286,9 @@ function addBall(event) {
     const boxRect = box.getBoundingClientRect();
     const radius = (dia / 2) / pixelMeter;
     const ball = {
-        pos: {
-            x: (event.clientX - boxRect.left) / pixelMeter,
-            y: (event.clientY - boxRect.top) / pixelMeter
-        },
-        vel: { x: velX, y: velY },
+        pos: vec((event.clientX - boxRect.left) / pixelMeter,
+            (event.clientY - boxRect.top) / pixelMeter),
+        vel: vec(velX, velY),
         mass: m,
         size: dia,
         pxRad: dia / 2,
@@ -347,16 +332,16 @@ function setFPS(event) {
 function setGravity(dir) {
     switch (dir) {
         case "top":
-            gVec = { x: 0, y: -1 };
+            gVec = vec(0, -1);
             break;
         case "right":
-            gVec = { x: 1, y: 0 };
+            gVec = vec(1, 0);
             break;
         case "bottom":
-            gVec = { x: 0, y: 1 };
+            gVec = vec(0, 1);
             break;
         case "left":
-            gVec = { x: -1, y: 0 };
+            gVec = vec(-1, 0);
             break;
     }
 }
